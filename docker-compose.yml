@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # PostgreSQL + pgvector 向量数据库
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    environment:
+      POSTGRES_DB: rag_db
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-rag_secret_2024}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag-network
+
+  # RAG API 服务
+  rag-api:
+    build: .
+    container_name: rag-microservice
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Embedding：容器内用挂载的本地模型（与 config.py 的 embedding_* 对应）
+      RAG_EMBEDDING_PROVIDER: local
+      RAG_EMBEDDING_MODEL: bge-m3
+      RAG_EMBEDDING_MODEL_PATH: /models/bge-m3
+      # LLM：容器内访问宿主机 Ollama。
+      # 原名 RAG_OLLAMA_* 已随配置改名，旧名会被 pydantic extra="ignore" 静默忽略，
+      # 所以这里必须同步改，否则容器内会回落到 127.0.0.1:11434 而连不上宿主机。
+      RAG_LLM_PROVIDER: ollama
+      RAG_LLM_BASE_URL: http://host.docker.internal:11434
+      RAG_LLM_MODEL: qwen2.5:7b
+      RAG_LLM_TIMEOUT_SECONDS: 180
+      # 原名 DATABASE_URL 缺 RAG_ 前缀，配置类读不到 → 容器内会 fallback 到
+      # localhost:5432 而连不上 postgres 服务，已修正
+      RAG_DATABASE_URL: postgresql+asyncpg://rag_user:${DB_PASSWORD:-rag_secret_2024}@postgres:5432/rag_db
+    volumes:
+      - D:\AI\Models\bge-m3:/models/bge-m3:ro
+      - D:\python-learn\RAG-learn\data\chroma:/app/data/chroma
+    ports:
+      - "127.0.0.1:8001:8000"
+    networks:
+      - rag-network
+
+volumes:
+  pgdata:
+
+networks:
+  rag-network:
+    driver: bridge
